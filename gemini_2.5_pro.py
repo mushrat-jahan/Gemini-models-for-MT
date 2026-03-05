@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +10,7 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from loguru import logger
-
+  
 logger.add("logs/file.log")
 
 logger.info("Starting the application")
@@ -24,7 +25,6 @@ if not api_key:
 #client = 
 client = genai.Client(api_key = api_key)
 logger.info("Gemini API Key configured")
-# logger.info("API key set")
 
 # Define Pydantic models for structured translation outputs
 class DefaultTranslation(BaseModel):
@@ -33,6 +33,7 @@ class DefaultTranslation(BaseModel):
     formal_alternative: Optional[str] = Field(None, description="More formal translation if applicable")
     domains: List[str] = Field(..., description="List of domains")
     notes: Optional[str] = Field(None, description="Translation notes or cultural context")
+    translation_time_seconds: float = Field(..., description="Time taken for translation in seconds")
 
 class WordPair(BaseModel):
     bangla: str = Field(..., description="Bangla word")
@@ -55,87 +56,57 @@ def create_translation_model(structure_type: str):
     }
     return models.get(structure_type, DefaultTranslation)
 
-def translate_text_structured(text: str, source_language:str, target_language: str, structure_type: str = "default"):
+def translate_text_structured(text: str, source_language: str, target_language: str):
     """
     Translate text from Bangla to the target language using Gemini with structured output
     validated by Pydantic models.
     """
+    start_time = time.time()
     try:
-        # Define system prompts based on structure type
-        system_prompts = {
-            "default": f"""You are a professional translator and a domain classification expert. Translate the {source_language} text to {target_language}. Also Identify the domain(s) of the following paragraph (language: {source_language}).
-                          Return a JSON object with the following structure:
-                          {{
+        # System instructions 
+        sys_instr = (
+            f"""You are a professional translator and a domain classification expert. Translate the {source_language} text to {target_language}. Also Identify the domain(s) of the following paragraph (language: {source_language}).
+            Return a JSON object with the following structure:
+            {{
                               "original_text": "The original {source_language} text",
                               "translated_text": "The translated text in {target_language}",
                               "formal_alternative": "A more formal translation if applicable",
                               "domains": "List of domains",
                               "notes": "Any translation notes or cultural context"
-                          }}"""
-        }
-        
-        # Use the appropriate prompt based on structure type
-        system_prompt = system_prompts.get(structure_type, system_prompts["default"])
-        
-      
-        # model = genai.GenerativeModel('gemini-3-pro-preview')  
-        # response = model.generate_content(
-        #       messages=[
-        #         {"role": "system", "content": system_prompt},
-        #         {"role": "user", "content": text}
-        #     ]
-        # )
-        
-        # model = genai.GenerativeModel('gemini-3-pro-preview')  
+            }}
+            """
+        )
+
+        # Model config
         response = client.models.generate_content(
-            model= "gemini-3-pro-preview",
+            model="gemini-2.5-pro",  
             contents=text,
             config=types.GenerateContentConfig(
+                system_instruction=sys_instr,
                 temperature=0.3,
-                )
-            # messages=[
-            #     {"role": "system", "content": system_prompt},
-            #     {"role": "user", "content": text}
-            # ]
+                response_mime_type="application/json",
+                response_schema=DefaultTranslation,  
+            )
         )
-        
-        
-        # Parse the JSON response
-        result = response.text.strip()  
-        
-        # Clean up the result to ensure it's valid JSON
-        if result.startswith("```json"):
-            result = result.replace("```json", "", 1)
-        if result.endswith("```"):
-            result = result[:-3]
-            
-        # Parse the JSON and validate with Pydantic
-        json_data = json.loads(result.strip())
-        
-        # Get the appropriate model class based on structure type
-        ModelClass = create_translation_model(structure_type)
-        
-        # Validate and create the model instance
-        validated_data = ModelClass(**json_data)
-        
-        # Return as dictionary
-        return validated_data.dict()
-    
-    except json.JSONDecodeError as e:
-        # Handle JSON parsing errors
-        error = TranslationError(
-            error=f"JSON parsing error: {str(e)}",
-            original_text=text
-        )
-        return error.dict()
-        
+
+        # Calculate elapsed time
+        elapsed_time_seconds = time.time() - start_time
+
+        # Use .model_dump() to return a dictionary to the FastAPI endpoint
+        if response.parsed:
+            result = response.parsed.model_dump()
+            result["translation_time_seconds"] = elapsed_time_seconds
+            return result
+        else:
+            parsed_result = json.loads(response.text)
+            parsed_result["translation_time_seconds"] = elapsed_time_seconds
+            return parsed_result
+
     except Exception as e:
-        # Handle general errors
-        error = TranslationError(
-            error=f"Translation error: {str(e)}",
-            original_text=text
-        )
-        return error.dict()
+        elapsed_time_seconds = time.time() - start_time
+        logger.error(f"Gemini API Error: {str(e)}")
+        return {"error": f"Model Processing Error: {str(e)}", "translation_time_seconds": elapsed_time_seconds}
+
 
 # Create FastAPI appS
 app = FastAPI(
@@ -179,7 +150,10 @@ async def translate(request: TranslationRequest):
         """
     )
 
-    logger.info("Translation complete")
+    if "translation_time_seconds" in result:
+        logger.info(f"Translation completed in {result['translation_time_seconds']:.2f}s")
+    else:
+        logger.info("Translation complete")
 
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
@@ -205,3 +179,7 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+
+#     sample_text = "আপনার দিনটি কেমন কাটছে?" 
