@@ -79,7 +79,7 @@ def translate_text_structured(text: str, source_language: str, target_language: 
 
         # Model config
         response = client.models.generate_content(
-            model="gemini-3.1-pro-preview",  
+            model="gemini-3.1-flash-lite-preview",  
             contents=text,
             config=types.GenerateContentConfig(
                 system_instruction=sys_instr,

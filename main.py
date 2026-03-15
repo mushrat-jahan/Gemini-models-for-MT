@@ -1,6 +1,5 @@
 import os
 import json
-import time
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,9 +30,8 @@ class DefaultTranslation(BaseModel):
     original_text: str = Field(..., description="Original Bangla text")
     translated_text: str = Field(..., description="Translated text in target language")
     formal_alternative: Optional[str] = Field(None, description="More formal translation if applicable")
-    domains: List[str] = Field(..., description="List of domains")
+    # domains: List[str] = Field(..., description="List of domains")
     notes: Optional[str] = Field(None, description="Translation notes or cultural context")
-    translation_time_seconds: float = Field(..., description="Time taken for translation in seconds")
 
 class WordPair(BaseModel):
     bangla: str = Field(..., description="Bangla word")
@@ -61,7 +59,6 @@ def translate_text_structured(text: str, source_language: str, target_language: 
     Translate text from Bangla to the target language using Gemini with structured output
     validated by Pydantic models.
     """
-    start_time = time.time()
     try:
         # System instructions 
         sys_instr = (
@@ -71,7 +68,6 @@ def translate_text_structured(text: str, source_language: str, target_language: 
                               "original_text": "The original {source_language} text",
                               "translated_text": "The translated text in {target_language}",
                               "formal_alternative": "A more formal translation if applicable",
-                              "domains": "List of domains",
                               "notes": "Any translation notes or cultural context"
             }}
             """
@@ -89,23 +85,15 @@ def translate_text_structured(text: str, source_language: str, target_language: 
             )
         )
 
-        # Calculate elapsed time
-        elapsed_time_seconds = time.time() - start_time
-
         # Use .model_dump() to return a dictionary to the FastAPI endpoint
         if response.parsed:
-            result = response.parsed.model_dump()
-            result["translation_time_seconds"] = elapsed_time_seconds
-            return result
+            return response.parsed.model_dump()
         else:
-            parsed_result = json.loads(response.text)
-            parsed_result["translation_time_seconds"] = elapsed_time_seconds
-            return parsed_result
+            return json.loads(response.text)
 
     except Exception as e:
-        elapsed_time_seconds = time.time() - start_time
         logger.error(f"Gemini API Error: {str(e)}")
-        return {"error": f"Model Processing Error: {str(e)}", "translation_time_seconds": elapsed_time_seconds}
+        return {"error": f"Model Processing Error: {str(e)}"}
 
 
 # Create FastAPI appS
@@ -150,10 +138,7 @@ async def translate(request: TranslationRequest):
         """
     )
 
-    if "translation_time_seconds" in result:
-        logger.info(f"Translation completed in {result['translation_time_seconds']:.2f}s")
-    else:
-        logger.info("Translation complete")
+    logger.info("Translation complete")
 
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
